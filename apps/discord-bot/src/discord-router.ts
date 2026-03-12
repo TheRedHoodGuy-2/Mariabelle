@@ -20,12 +20,12 @@ import { handleDiscordCardSpawn } from './discord-cards';
 
 // ─── BOLD UNICODE DECODER (Tensura bot sends bold text) ──────
 const BOLD_MAP: Record<string, string> = {
-  '𝗔':'A','𝗕':'B','𝗖':'C','𝗗':'D','𝗘':'E','𝗙':'F','𝗚':'G','𝗛':'H',
-  '𝗜':'I','𝗝':'J','𝗞':'K','𝗟':'L','𝗠':'M','𝗡':'N','𝗢':'O','𝗣':'P',
-  '𝗤':'Q','𝗥':'R','𝗦':'S','𝗧':'T','𝗨':'U','𝗩':'V','𝗪':'W','𝗫':'X',
-  '𝗬':'Y','𝗭':'Z',
-  '𝟬':'0','𝟭':'1','𝟮':'2','𝟯':'3','𝟰':'4',
-  '𝟱':'5','𝟲':'6','𝟳':'7','𝟴':'8','𝟵':'9',
+  '𝗔': 'A', '𝗕': 'B', '𝗖': 'C', '𝗗': 'D', '𝗘': 'E', '𝗙': 'F', '𝗚': 'G', '𝗛': 'H',
+  '𝗜': 'I', '𝗝': 'J', '𝗞': 'K', '𝗟': 'L', '𝗠': 'M', '𝗡': 'N', '𝗢': 'O', '𝗣': 'P',
+  '𝗤': 'Q', '𝗥': 'R', '𝗦': 'S', '𝗧': 'T', '𝗨': 'U', '𝗩': 'V', '𝗪': 'W', '𝗫': 'X',
+  '𝗬': 'Y', '𝗭': 'Z',
+  '𝟬': '0', '𝟭': '1', '𝟮': '2', '𝟯': '3', '𝟰': '4',
+  '𝟱': '5', '𝟲': '6', '𝟳': '7', '𝟴': '8', '𝟵': '9',
 };
 function decodeBold(str: string): string {
   return str.split('').map(c => BOLD_MAP[c] || c).join('');
@@ -44,18 +44,18 @@ export async function loadDiscordBots(): Promise<void> {
 
 // ─── MAIN ROUTER ─────────────────────────────────────────────
 export async function routeDiscordMessage(
-  selfBot:     SelfClient,
+  selfBot: SelfClient,
   observerBot: Client,
-  message:     any,
-  source:      'selfbot' | 'observer'
+  message: any,
+  source: 'selfbot' | 'observer'
 ): Promise<void> {
   const channelId = message.channelId ?? message.channel?.id;
   if (!channelId) return;
 
-  const rawText  = message.content ?? '';
-  const text     = decodeBold(rawText);
+  const rawText = message.content ?? '';
+  const text = decodeBold(rawText);
   const authorId = message.author?.id ?? 'unknown';
-  const isBot    = message.author?.bot === true;
+  const isBot = message.author?.bot === true;
 
   // RAW LOG — see every message arriving
   log.debug(`[DISCORD-RAW] ch:${channelId.slice(-6)} bot:${isBot} src:${source} | "${rawText.slice(0, 80)}"`);
@@ -86,18 +86,18 @@ export async function routeDiscordMessage(
 
 // ─── GAME BOT REPLY ROUTER ───────────────────────────────────
 async function routeGameBotReply(
-  selfBot:   SelfClient,
-  message:   any,
+  selfBot: SelfClient,
+  message: any,
   channelId: string,
-  text:      string   // already decoded
+  text: string   // already decoded
 ): Promise<void> {
-  const embeds    = message.embeds ?? [];
+  const embeds = message.embeds ?? [];
   const timestamp = message.createdAt ?? new Date();
 
   // Card spawn — check embeds
   for (const embed of embeds) {
     const title = decodeBold(embed.title ?? embed.data?.title ?? '');
-    const desc  = decodeBold(embed.description ?? embed.data?.description ?? '');
+    const desc = decodeBold(embed.description ?? embed.data?.description ?? '');
     if (/wild card has appeared/i.test(title) || /wild card has appeared/i.test(desc)) {
       log.info(`[DISCORD] Card spawn detected in ${channelId}`);
       await handleDiscordCardSpawn(selfBot, embed, channelId, timestamp);
@@ -153,13 +153,13 @@ async function routeGameBotReply(
 // ─── WIN/LOSS DETECTION — covers Tensura bold unicode variants ─
 function isGamblingOutcome(text: string): boolean {
   return (
-    /\b(won|win|wins)\b/i.test(text)          ||
-    /\b(lost|lose|loss)\b/i.test(text)         ||
-    /guessed (it )?right/i.test(text)          ||
-    /better luck/i.test(text)                  ||
-    /you win!/i.test(text)                     ||
-    /you lost/i.test(text)                     ||
-    /\btie\b/i.test(text)                      ||
+    /\b(won|win|wins)\b/i.test(text) ||
+    /\b(lost|lose|loss)\b/i.test(text) ||
+    /guessed (it )?right/i.test(text) ||
+    /better luck/i.test(text) ||
+    /you win!/i.test(text) ||
+    /you lost/i.test(text) ||
+    /\btie\b/i.test(text) ||
     /refunded/i.test(text)
   );
 }
@@ -171,12 +171,12 @@ function looksLikeGameBot(text: string): boolean {
 // ─── HEALTH UPDATE ───────────────────────────────────────────
 async function updateHealth(channelId: string, isBot: boolean, timestamp: Date): Promise<void> {
   const payload: any = {
-    group_id:   channelId,
-    platform:   'discord',
-    status:     'online',
+    group_id: channelId,
+    platform: 'discord',
+    status: 'online',
     updated_at: new Date().toISOString(),
   };
-  if (isBot)  payload.last_bot_msg  = timestamp.toISOString();
+  if (isBot) payload.last_bot_msg = timestamp.toISOString();
   if (!isBot) payload.last_cmd_seen = timestamp.toISOString();
 
   await supabase.from('bot_health').upsert(payload, { onConflict: 'group_id,platform' });

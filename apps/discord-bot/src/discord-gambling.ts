@@ -10,25 +10,25 @@ import { sendQueued } from './discord-send-queue';
 
 // Inlined types (avoids @tensura/shared-types resolution issue)
 type GameType = string;
-type GamblingOutcome = 'win'|'loss'|'draw'|'unresolved';
+type GamblingOutcome = 'win' | 'loss' | 'draw' | 'unresolved';
 
 interface PendingBet {
-  messageId:  string;
-  playerId:   string;
-  game:       GameType;
-  betAmount:  number;
-  guess:      string | null;
-  channelId:  string;
+  messageId: string;
+  playerId: string;
+  game: GameType;
+  betAmount: number;
+  guess: string | null;
+  channelId: string;
   detectedAt: Date;
 }
 
 const pendingQueue = new Map<string, PendingBet[]>();
-const PENDING_TTL  = 10 * 60 * 1000;
+const PENDING_TTL = 10 * 60 * 1000;
 
 // ─── MAIN HANDLER ────────────────────────────────────────────
 export async function handleDiscordGambling(
-  message:    any,
-  channelId:  string,
+  message: any,
+  channelId: string,
   isBotReply: boolean
 ): Promise<void> {
   if (!isBotReply) {
@@ -39,18 +39,18 @@ export async function handleDiscordGambling(
 }
 
 async function onBetPlaced(message: any, channelId: string): Promise<void> {
-  const text      = message.content ?? '';
+  const text = message.content ?? '';
   const gameMatch = text.match(/^\.(casino|cf|slots|dice|db|roulette|horse|dp)\s*/i);
   if (!gameMatch) return;
 
-  const game      = gameMatch[1].toLowerCase() as GameType;
-  const parts     = text.trim().split(/\s+/);
+  const game = gameMatch[1].toLowerCase() as GameType;
+  const parts = text.trim().split(/\s+/);
   const betAmount = parseInt(parts[parts.length - 1]?.replace(/[$,]/g, ''));
   if (isNaN(betAmount)) return;
 
   const guess =
-    game === 'cf'               ? text.match(/\.(cf)\s+(heads?|tails?)/i)?.[2]?.toLowerCase() ?? null :
-    game === 'dice' || game === 'db' ? text.match(/\.(dice|db)\s+([1-6])/i)?.[2] ?? null : null;
+    game === 'cf' ? text.match(/\.(cf)\s+(heads?|tails?)/i)?.[2]?.toLowerCase() ?? null :
+      game === 'dice' || game === 'db' ? text.match(/\.(dice|db)\s+([1-6])/i)?.[2] ?? null : null;
 
   const bet: PendingBet = {
     messageId: message.id, playerId: message.author?.id ?? 'unknown',
@@ -58,7 +58,7 @@ async function onBetPlaced(message: any, channelId: string): Promise<void> {
   };
 
   const key = channelId + ':' + bet.playerId + ':' + game + ':' + betAmount;
-  const q   = pendingQueue.get(key) ?? [];
+  const q = pendingQueue.get(key) ?? [];
   q.push(bet);
   pendingQueue.set(key, q);
 
@@ -76,7 +76,7 @@ async function onBotReply(message: any, channelId: string): Promise<void> {
   if (!isGamblingOutcome(text)) return;
 
   const outcome = parseOutcome(text);
-  const payout  = parsePayout(text, outcome);
+  const payout = parsePayout(text, outcome);
 
   // Try quoted match first
   const refId = message.reference?.messageId;
@@ -88,9 +88,9 @@ async function onBotReply(message: any, channelId: string): Promise<void> {
   // FIFO queue fallback
   for (const [key, q] of pendingQueue.entries()) {
     if (!key.startsWith(channelId) || !q.length) continue;
-    const bet    = q.shift()!;
+    const bet = q.shift()!;
     if (!q.length) pendingQueue.delete(key);
-    const delay  = (message.createdAt?.getTime() ?? Date.now()) - bet.detectedAt.getTime();
+    const delay = (message.createdAt?.getTime() ?? Date.now()) - bet.detectedAt.getTime();
     await logEvent(bet, outcome, payout, delay, 'mention', message.createdAt ?? new Date());
     break;
   }
@@ -177,7 +177,7 @@ let cachedAt: Date | null = null;
 
 export function updateDiscordBalance(balance: number): void {
   cachedBalance = balance;
-  cachedAt      = new Date();
+  cachedAt = new Date();
 }
 
 function getCachedBalance(): number | null {
@@ -190,18 +190,18 @@ function getCachedBalance(): number | null {
 // NOTE: text passed here is ALREADY bold-decoded by discord-router
 function isGamblingOutcome(t: string): boolean {
   return (
-    /\b(won|win|wins)\b/i.test(t)    ||
-    /\b(lost|lose|loss)\b/i.test(t)  ||
-    /guessed (it )?right/i.test(t)   ||
-    /better luck/i.test(t)           ||
-    /\btie\b/i.test(t)               ||
+    /\b(won|win|wins)\b/i.test(t) ||
+    /\b(lost|lose|loss)\b/i.test(t) ||
+    /guessed (it )?right/i.test(t) ||
+    /better luck/i.test(t) ||
+    /\btie\b/i.test(t) ||
     /refunded/i.test(t)
   );
 }
 function parseOutcome(t: string): GamblingOutcome {
   if (/\b(won|win|wins)\b/i.test(t) || /guessed (it )?right/i.test(t)) return 'win';
-  if (/\b(lost|lose|loss)\b/i.test(t) || /better luck/i.test(t))        return 'loss';
-  if (/\btie\b|refunded/i.test(t))                                       return 'draw';
+  if (/\b(lost|lose|loss)\b/i.test(t) || /better luck/i.test(t)) return 'loss';
+  if (/\btie\b|refunded/i.test(t)) return 'draw';
   return 'unresolved';
 }
 function parsePayout(t: string, o: GamblingOutcome): number {
