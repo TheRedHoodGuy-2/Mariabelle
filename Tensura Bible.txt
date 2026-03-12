@@ -1,0 +1,642 @@
+TENSURA DOMINATION PROJECT
+Project Bible & Living Technical Document
+Version 1.0  |  March 2026  |  CONFIDENTIAL
+HOW TO USE THIS DOCUMENT
+This document is the single source of truth for the entire Tensura Domination Project. It contains every strategic decision, all technical logic, the complete database schema, the full dashboard plan, and a live build tracker. If you are an AI assistant picking this project up mid-build: read this document fully before doing anything. Every decision made has a reason. Do not deviate from the architecture without understanding the full context. When code is written, the Build Tracker section is updated so any AI or developer can see exactly what exists and what comes next.
+ 
+1. Project Overview
+1.1 Goal
+Become the richest player in the Tensura WhatsApp/Discord community by building a fully automated, cross-platform bot system that maximises coin and card acquisition across both platforms simultaneously.
+1.2 The Tensura Ecosystem
+Tensura (also called Rimuru's Slime / Tensura community) is a large anime-themed WhatsApp and Discord community centered around the anime "That Time I Got Reincarnated as a Slime." The community operates on both WhatsApp and Discord simultaneously.
+Key facts:
+•	Each user has ONE unified profile regardless of platform (WhatsApp or Discord)
+•	Balance, cards, XP — all shared across platforms
+•	The leaderboard at rimuruslime.com/leaderboards is combined across both platforms
+•	There are 18 named bots: ALYA, AQUA, ASUNA, ELAINA, FRIEREN, KURUMI, MAI, MARIN, MEGUMIN, MITA, MIYABI, MODEUS, NAZUNA, REM, RIMURU, RIN, YUKI — all using prefix "."
+•	Each WhatsApp group has exactly ONE bot assigned to it
+•	Discord servers can have multiple bots
+•	Bot numbers/IDs are dynamic — never hardcode them
+1.3 The Two Wealth Systems
+The entire economy runs on two pillars:
+Cards	Anime character cards that spawn in groups. Tiers 1-6 plus Tier S. Higher tier = higher value. Can be claimed, sold, auctioned, traded, or used as loan collateral.
+Coins	The currency. Earned through gambling, daily rewards, fishing, digging, passive events. Stored in wallet (liquid) and bank (safe). Bank has a capacity limit upgradeable via .shop.
+1.4 Current Top of Leaderboard
+As of March 2026 (Tempest Gambling group, combined leaderboard):
+#1 ~	$5.5M total
+#2 PENGUIN	$5.3M total
+#3 CERTIFIED HATER	$5.2M total
+#4 LIA	$5.0M total
+#5 KOJI.KIYOTAKA	$3.8M total
+Target to beat #1	Approximately $5.5M+ coins combined
+
+ 
+2. Account Structure
+2.1 Two-Account Model
+CRITICAL ARCHITECTURAL DECISION: Never run automation on your main account. Operate two separate accounts.
+MAIN ACCOUNT	Your personal WhatsApp number + Discord account. This is your VAULT. Holds all accumulated wealth (bank balance, high-tier cards). Minimal bot activity. Manual play only. Never automate this account.
+BOT ACCOUNT	Dedicated WhatsApp SIM (separate number) + Discord account. Runs ALL automation 24/7. Earns coins and cards continuously. You manually transfer assets to MAIN periodically.
+Transfer method	YOU manually send .donate [amount] or .sc [@main] [card_index] [price] from the bot account when you decide to. No automated transfer — keeps it looking human.
+Why this matters	If bot account gets banned, you lose nothing. All wealth is safely on main. Bot account is replaceable. Main account is irreplaceable.
+2.2 Number Change Procedure
+If the bot WhatsApp number gets banned:
+1.	Get a new SIM/number
+2.	Delete old Baileys session file
+3.	Re-authenticate Baileys with new number
+4.	Run this SQL: UPDATE all tables SET player_id = 'new_number' WHERE player_id = 'old_number'
+5.	Bot resumes exactly where it left off — all data preserved in Supabase
+Note: The Tensura profile IS tied to the WhatsApp number at the server level. A banned number loses its Tensura profile. This is why the main account (vault) must never run automation and must never get banned.
+
+ 
+3. Tech Stack
+WhatsApp Bot	Baileys library (TypeScript/Node.js) — WhatsApp Web protocol
+Discord Bot	discord.js (TypeScript/Node.js)
+Dashboard	Next.js (TypeScript) — 7 pages, fully live via Supabase Realtime
+Database	Supabase (PostgreSQL + Realtime WebSockets)
+Shared Types	TypeScript interfaces package shared between all three systems
+Language	TypeScript throughout — all three components
+Runtime	Node.js
+Deployment	Raspberry Pi 5 (existing infrastructure from Rimuru Bot project)
+3.1 Project Folder Structure
+tensura-project/
+  apps/
+    whatsapp-bot/     ← Baileys bot
+    discord-bot/      ← discord.js bot
+    dashboard/        ← Next.js frontend
+  packages/
+    shared-types/     ← TypeScript interfaces used by all three
+    supabase/         ← DB client, schema, migrations
+  docs/
+    TENSURA_BIBLE.docx  ← This document
+
+ 
+4. Database Schema (Supabase / PostgreSQL)
+Enable Supabase Realtime on: gambling_events, card_events, bot_health, daily_claims, fishing_events, dig_events, passive_income_events. This powers the live dashboard.
+4.1 known_bots
+Dynamically populated by parsing .bots command responses. Never hardcoded.
+known_bots (
+  id            uuid primary key default gen_random_uuid(),
+  bot_name      text,              -- ELAINA, RIMURU, etc.
+  identifier    text unique,       -- phone number (WA) or user ID (Discord)
+  platform      text,              -- whatsapp | discord
+  active        boolean default true,
+  first_seen    timestamptz default now(),
+  last_seen     timestamptz,
+  updated_at    timestamptz default now()
+)
+4.2 gambling_events
+Every gambling outcome across all groups and platforms.
+gambling_events (
+  id              uuid primary key default gen_random_uuid(),
+  player_id       text not null,
+  player_name     text,
+  platform        text,             -- whatsapp | discord
+  group_id        text not null,
+  game            text not null,    -- casino|slots|coinflip|dice|db|roulette|horse|dp
+  bet_amount      bigint not null,
+  outcome         text,             -- win | loss | draw | unresolved
+  payout          bigint,           -- positive=win, negative=loss, 0=draw
+  multiplier      float,
+  guess           text,             -- heads/tails for cf, 1-6 for dice/db
+  reply_delay_ms  int,              -- time between command and bot reply
+  match_method    text,             -- quoted | mention | orphan
+  timestamp       timestamptz not null,
+  resolved_at     timestamptz,
+  created_at      timestamptz default now()
+)
+4.3 pending_bets
+In-flight bets awaiting bot reply. Cleared once resolved. Keyed by message_id for reply matching.
+pending_bets (
+  id              uuid primary key default gen_random_uuid(),
+  message_id      text unique,      -- WA/Discord message ID for reply matching
+  player_id       text not null,
+  game            text not null,
+  bet_amount      bigint not null,
+  guess           text,
+  group_id        text not null,
+  platform        text,
+  status          text default 'pending',  -- pending | resolved | expired
+  created_at      timestamptz default now()
+)
+4.4 card_events
+Every card spawn, claim attempt, and outcome.
+card_events (
+  id              uuid primary key default gen_random_uuid(),
+  spawn_id        text not null,    -- alphanumeric WA (e.g. 561ca) or numeric Discord (e.g. 94650)
+  card_name       text,
+  tier            int,              -- 1-6 or 99 for Tier S
+  price           bigint,           -- market value at spawn time
+  issue           int,              -- issue number from spawn message
+  group_id        text not null,
+  platform        text,
+  spawn_time      timestamptz,
+  our_claim_time  timestamptz,
+  delay_ms        int,              -- our actual delay before claiming
+  outcome         text,             -- claimed | missed | unresolved_offline | expired
+  claimed_by      text,             -- if missed: who got it
+  winner_delay_ms int,              -- how fast winner was (for competition analysis)
+  created_at      timestamptz default now()
+)
+4.5 daily_claims
+daily_claims (
+  id              uuid primary key default gen_random_uuid(),
+  group_id        text not null,
+  platform        text,
+  amount          int,
+  streak_bonus    int,
+  streak_count    int,
+  timestamp       timestamptz not null
+)
+4.6 fishing_events
+fishing_events (
+  id              uuid primary key default gen_random_uuid(),
+  group_id        text not null,
+  platform        text,
+  catch_type      text,             -- fish | item | card | nothing
+  coins_earned    int,
+  raw_response    text,             -- full bot reply stored for analysis
+  timestamp       timestamptz not null
+)
+4.7 dig_events
+dig_events (
+  id              uuid primary key default gen_random_uuid(),
+  group_id        text not null,
+  platform        text,
+  result_type     text,             -- coins | item | card | nothing
+  value           int,
+  raw_response    text,
+  timestamp       timestamptz not null
+)
+4.8 passive_income_events
+Random coin drops that are NOT gambling outcomes. "A stranger flicked coins at you" type events.
+passive_income_events (
+  id              uuid primary key default gen_random_uuid(),
+  group_id        text not null,
+  platform        text,
+  source          text,             -- stranger | quest_giver | tip | unknown
+  amount          int,
+  timestamp       timestamptz not null
+)
+4.9 bot_health
+bot_health (
+  group_id        text not null,
+  platform        text not null,
+  bot_name        text,
+  status          text,             -- online | suspicious | offline | recovering | partial_outage
+  last_bot_msg    timestamptz,
+  last_cmd_seen   timestamptz,      -- last time ANY user sent a command in this group
+  ping_check_sent timestamptz,      -- when we last sent .test
+  avg_ping_ms     int,
+  offline_since   timestamptz,
+  failing_cmds    text[],           -- for partial_outage: which command types are failing
+  updated_at      timestamptz default now(),
+  primary key (group_id, platform)
+)
+4.10 group_stats
+group_stats (
+  group_id          text not null,
+  platform          text not null,
+  cards_per_hour    float,
+  our_claim_rate    float,
+  avg_competitor_ms int,
+  group_score       float,          -- composite score for prioritisation
+  updated_at        timestamptz default now(),
+  primary key (group_id, platform)
+)
+4.11 unprompted_events
+Bot messages that have no associated user command. Coin bombs, lottery announcements, event broadcasts, etc. Stored raw for future parsing.
+unprompted_events (
+  id              uuid primary key default gen_random_uuid(),
+  group_id        text not null,
+  platform        text,
+  raw_text        text,
+  event_type      text,             -- populated once patterns are known
+  timestamp       timestamptz not null
+)
+
+ 
+5. Bot Logic: Gambling Data Collector
+This module is PASSIVE — it watches and records. It never places bets. It runs on both WhatsApp and Discord simultaneously.
+5.1 Games Detected
+.casino <amount>	Simple double-or-nothing. Most popular game. Win = 2x bet.
+.cf <heads|tails> <amount>	Coinflip. Guess heads or tails.
+.slots <amount>	Slot machine. Win = 2x bet.
+.dice <1-6> <amount>	Guess the dice roll (1-6). Win = 3x bet.
+.db <amount>	Dice battle vs Rimuru. Both roll, higher wins. Draw possible = refund.
+.roulette <type> <amount>	Roulette with bet types.
+.horse <selection> <amount>	Horse racing (mechanics not yet fully documented).
+.dp <amount>	Unknown mechanic — log raw responses until understood.
+5.2 Command Detection
+Listen for all messages matching the command patterns above. On match, create a pending_bet record:
+pending_bet = {
+  id:           uuid,
+  message_id:   original message ID,   // KEY for reply matching
+  player_id:    sender phone/Discord ID,
+  player_name:  sender display name,
+  platform:     whatsapp | discord,
+  group_id:     group/channel identifier,
+  game:         detected game type,
+  bet_amount:   parsed from command,
+  guess:        heads/tails or 1-6 (if applicable),
+  status:       pending,
+  created_at:   now()
+}
+Queue keyed by: group_id + player_id + game + bet_amount (FIFO per key, handles spam/multi-group same-bet scenarios).
+5.3 Bot Reply Matching (Priority Order)
+PRIORITY 1 — Quoted/replied message (most reliable):
+Bot reply quotes a message → look up pending_bet by quoted message_id → direct 1:1 match → resolve immediately
+PRIORITY 2 — Player mention + game + amount:
+Bot reply mentions player name → match by player_id + game + bet_amount + group_id → pop oldest from FIFO queue → resolve
+PRIORITY 3 — Orphan queue:
+No clean match → store as orphan → retry matching every 30s → expire after 10 mins → mark unresolved
+5.4 Outcome Parsing — Exact Bot Response Patterns
+WIN patterns:
+"You win! +X coins!"
+"You won X coins!"
+"You guessed it right! You win X coins!"
+LOSS patterns:
+"You lost. Better luck next time!"
+"You lost X coins. Better luck next time!"
+"You guessed wrong. Better luck next time!"
+DRAW pattern (.db only):
+"It's a tie! Your bet has been refunded."
+PASSIVE INCOME (route to passive_income_events, NOT gambling):
+"A stranger flicked X coins at you"
+"A quest giver handed you X coins"
+"Someone tipped X coins"
+5.5 Cross-Group / Spam Bet Handling
+Players sometimes bet in Group A (high ping, no reply) then repeat in Group B. These are TWO separate events on two separate group_ids. Log both independently. The FIFO queue per group_id prevents cross-contamination. Flag players who consistently cross-group-bet as cross_group_bettor: true for intelligence value.
+5.6 Pending Bet Expiry
+Pending bets expire after 10 minutes with no reply → mark status: expired, reason: timeout. Global send queue enforces minimum 500ms gap between ANY outgoing message across ALL groups to prevent WhatsApp rate limiting.
+
+ 
+6. Bot Logic: Card Claimer
+Target: 90% claim rate. The card claimer is the single highest ROI feature of the entire system.
+6.1 Card Spawn Message Format
+WhatsApp — image + caption:
+🎊 A wild card has appeared! 🎊
+
+Name: Wilhelm van Astrea
+Tier: 3
+Price: $19911
+Spawn ID: 561ca          ← 5-char alphanumeric
+Issue: #1
+
+Claim it with .claim 561ca
+Discord — embed format:
+Title: "A wild card has appeared!"
+Fields: Name, Tier, Price, Issue
+Card artwork image
+Footer: "Claim it with .claim 94650"   ← numeric only on Discord
+Spawn ID extraction regex (works for both platforms):
+/\.claim\s+([a-zA-Z0-9]+)/
+6.2 Humanised Delay Distribution
+DO NOT use flat Math.random(). Use weighted distribution that mimics human reaction:
+1500ms – 2500ms	20% probability — fast, rare
+2500ms – 4000ms	50% probability — normal, peak zone
+4000ms – 6000ms	25% probability — slow, occasional
+6000ms – 9000ms	5% probability — very slow, rare
+Adjust by group competition score: low competition groups → shift distribution 500ms faster. High competition → use base distribution as-is.
+6.3 Offline Recovery Flow
+When .claim is sent but no bot reply arrives:
+T+0s:   .claim [spawn_id] sent — no reply
+T+5s:   resend .claim [same spawn_id]
+T+20s:  if still no reply → send .test
+T+50s:  if .test no reply → send .bots
+T+60s:  if .bots no reply → one final .claim attempt
+T+70s:  give up → mark outcome: unresolved_offline
+When bot comes back ONLINE after offline period:
+→ Send .col or .si to reconcile collection
+→ Compare against last known collection state
+→ Any new cards = successful offline claim → update outcome to claimed
+6.4 Group Competition Scoring
+Per group, maintain rolling stats used to prioritise groups and adjust claim speed:
+group_score = (
+  cards_per_hour              * 0.5 +
+  our_claim_rate              * 0.3 +
+  (1 / avg_competitor_speed)  * 0.2
+)
+High competition flag: if gap between winner and our bot is consistently < 300ms → another bot is likely present in that group. Log as suspected_bot_group and consider deprioritising.
+6.5 Miss Tracking
+On every miss log: card name, tier, group_id, spawn time, who claimed it, their speed, our delay, the gap. This data drives group scoring and delay optimisation over time.
+
+ 
+7. Bot Logic: Daily, Fishing & Digging
+7.1 Daily (.daily)
+Per-group independent tracking. Never miss — streak loss is the worst possible outcome.
+On startup: check last_daily_at from Supabase per group
+If > 24h since last claim → send .daily immediately
+Parse response: "claimed your daily reward of X coins + Y streak bonus (streak: Z)"
+Log: amount, streak_bonus, streak_count, group_id, timestamp
+Schedule next: now + 24h per group
+
+If bot offline when daily is due:
+  → retry every 30 minutes
+  → after 3 failed retries: alert via Discord private channel
+  → never skip
+7.2 Fishing (.fish + .sell fish)
+5–20 attempts per hour per group. Each group has independent scheduler.
+Interval between casts (weighted):
+3–5 min gap	20% probability
+5–7 min gap	50% probability — peak
+7–10 min gap	25% probability
+10–12 min gap	5% probability
+Gives approximately 10–12 casts per hour average.
+Catch routing:
+fish caught  → immediately send .sell fish → log coins earned
+item caught  → log item type, hold for future routing
+card caught  → treat as card claim, log tier + name
+nothing      → log miss, schedule next attempt
+on cooldown  → parse exact wait time, schedule precisely (subtract 5s to avoid drift)
+7.3 Digging (.dig)
+Same scheduler pattern as fishing. Confirmed response format:
+"You used your Shovel and dug up:"
+[coin image] $241 Coins
+Bot response is a MEDIA message (image + caption text). Parse coins from caption. Cooldown duration unknown — learn from first responses and schedule accordingly. Store raw_response for all dig results until patterns are fully understood.
+7.4 Cooldown Checking (.cds)
+.cds shows cooldown status for all commands. Run .cds on startup per group to immediately know when each command is next available, rather than waiting to discover cooldowns organically.
+
+ 
+8. Bot Health Monitor
+One bot per WhatsApp group (confirmed). Multiple bots possible per Discord server. State machine runs independently per group.
+8.1 Five-State Machine
+ONLINE	Bot messages arriving normally. All automation runs.
+SUSPICIOUS	No bot reply for 3+ min (high-activity) or 10+ min (low-activity) while commands are being sent. One .test command sent. Waiting up to 10 min for any reply.
+OFFLINE	No reply to .test after 10 min wait. ALL automation stopped. Passive listening only. Waiting for any bot message.
+RECOVERING	Bot message received after offline. Wait 60s to confirm stability. Reconcile collection (.col). Flush missed dailies. Resume automation. Transition to ONLINE.
+PARTIAL_OUTAGE	.test replies (bot alive) but specific command types have 0 replies in 30 min in an active group. Only suspend failing command types. Keep other automations running.
+8.2 Activity-Aware Trigger
+Only enter SUSPICIOUS state if: (1) other users ARE sending commands in the group (group is active) AND (2) the bot is not replying to ANY of them. If the group is simply quiet, do not trigger — bot may be fine.
+8.3 Dynamic Bot Detection
+Never hardcode bot phone numbers or Discord IDs. Detect dynamically:
+WhatsApp: parse .bots command response. Extract bot names and their sender phone numbers. Store in known_bots table. Any new bot appearing in .bots response that is not in the table gets added automatically. If a number changes, old entry goes inactive, new one is added on next .bots parse.
+Discord: use author.bot === true flag (discord.js native). No hardcoding needed. Store bot username + snowflake ID in known_bots table.
+8.4 .bots Response Format
+Confirmed format from screenshot:
+TENSURA
+  └─ BOTS
+      ├─ ALYA    🟢  (green = online)
+      ├─ MEGUMIN 🔴  (red = offline)
+      ...
+Parse this to update bot_health status for all bots in the group. Run .bots check once after 3 minutes of no bot messages (when commands ARE being sent). If no reply to .bots after 10 minutes → mark OFFLINE.
+
+ 
+9. Known Issues & Edge Cases (All Resolved)
+Queue keyed wrong	FIXED: Queue keyed by group_id + player_id + game + bet_amount. Each group has its own FIFO queue slot.
+Passive income polluting queue	FIXED: Explicit pattern filter checks for passive income phrases before any match attempt. Routed to passive_income_events.
+Draw (.db) text unknown	RESOLVED: Confirmed text: "It's a tie! Your bet has been refunded."
+Global send rate limit	FIXED: Minimum 500ms gap between ANY outgoing message across ALL groups enforced via global send queue.
+Claim code extraction naive	FIXED: Spawn format confirmed. Exact regex: /\.claim\s+([a-zA-Z0-9]+)/ Extracts from "Claim it with .claim [ID]" line.
+Multi-bot duplicate spawns	ELIMINATED: One bot per WhatsApp group confirmed. Non-issue.
+Claim code expiry	HANDLED: Offline recovery flow with retry cascade. expired added as valid outcome.
+Unresolved claims during offline	HANDLED: Full retry cascade (T+0 to T+70s) + collection reconciliation on recovery.
+Cooldown drift	FIXED: Subtract 5s from all parsed cooldowns. Send slightly early.
+Sell router for non-fish	FIXED: Catch type router — fish→sell, item→hold, card→log, coins→nothing.
+False offline low-activity groups	FIXED: Activity-aware trigger — only enter SUSPICIOUS if commands are being sent by other users.
+Partial bot outage	FIXED: PARTIAL_OUTAGE state tracks failing_cmds[] per group. Only suspends failing command types.
+
+ 
+10. Dashboard (Next.js)
+7 pages. Fully live via Supabase Realtime WebSockets — zero manual refresh ever. Responsive for both mobile and desktop. Full command control built in from day one.
+Route structure:
+/	Home — Command Center
+/wealth	Wealth & Economy
+/cards	Card Collection & Intelligence
+/gambling	Gambling Analytics
+/bots	Bot Health & Group Management
+/control	Manual Command Center
+/leaderboard	Position Tracking & Competitor Intelligence
+10.1 Realtime Strategy
+Home /	Subscribe to ALL tables → update counters live
+/wealth	Subscribe to daily_claims, gambling_events, passive_income_events, card_events
+/cards	Subscribe to card_events
+/gambling	Subscribe to gambling_events
+/bots	Subscribe to bot_health
+/leaderboard	Subscribe to bot_health (richlist polling updates)
+/control	Subscribe to bot_health (shows live command responses)
+10.2 Home Page — Command Center
+Persistent top bar: Total Wealth ($X,XXX,XXX) | Rich List Position (#XX) | Bots Online (XX/XX) — all live.
+Main 2x2 grid: Wealth summary, Cards summary, Gambling today summary, Bot health summary.
+Live event feed (scrolling, bottom): every card spawn/claim, gambling outcome, daily claim, bot status change — color coded and timestamped.
+10.3 Wealth Page
+Left: Balance breakdown — main account and bot account separately, combined total prominent. Projected bank interest per tier card held. Active loan status (amount, interest rate, deadline). Right: Wealth over time line chart (7d/30d toggle) with win/loss markers. Bottom: Full filterable transaction history.
+10.4 Cards Page
+Top stats: total card count, Tier S count, Tier 6 count, estimated total portfolio value. Filter bar by tier, series, sort order. Card grid with click-to-expand modal showing: name, tier, series, price, card ID, issue number + action buttons (Sell on Market, Send to Main, Put to Auction, Lend Card, Trade). Duplicate detector highlights cards owned 2+ of. Series tracker shows collection completeness.
+10.5 Gambling Analytics Page
+Live stats: today W/L, net coins today, biggest win, biggest loss, win rate. Game breakdown table: Casino, Slots, Coinflip, Dice, DB, Roulette — plays/wins/win rate/net P&L per game. Charts: win rate over time per game, hourly activity heatmap, bet size vs win rate scatter plot. Player intelligence: top gamblers, their win rates, favourite games.
+10.6 Bot Health Page
+One card per group showing: bot name, status indicator (online/suspicious/offline/partial), ping, last message time, cards claimed today, daily status, next fish time. Per-group controls: Force .test, Force .daily, Pause automation, Resume automation. Global emergency controls: Pause ALL, Resume ALL, Force daily all groups.
+10.7 Control Page — Manual Command Center
+Group selector dropdown. Free-form command input with Send button. Quick action buttons for common commands: .daily, .fish, .dig, .bal, .cds, .rich, .col, .inv, .shop. Per-group automation toggles: Auto daily, Auto fish, Auto dig, Auto claim cards, Log gambling, Auto gamble (off by default). Full command history with responses and timestamps.
+10.8 Leaderboard Tracker Page
+Our current positions (live): Balance rank, Cards rank, XP rank. Rich list top 10 with our position highlighted. Gap to #1 shown prominently. Estimated time to #1 at current growth rate. Historical rank chart over time. Competitor profiles for top 5 players: balance changes over time, alert when overtaken or we overtake.
+
+ 
+11. Bot Command Reference
+All bots use prefix ".". Commands confirmed via in-game testing.
+11.1 Economy Commands
+.balance / .bal	Check wallet, bank, max capacity, total
+.daily	Claim daily reward. Base 1000 coins + 100 per streak day
+.deposit / .dep	Deposit coins to bank. Bank has capacity limit.
+.withdraw / .wd	Withdraw from bank to wallet
+.donate [@] [amount]	Transfer coins to another player
+.fish	Fishing minigame. Cooldown applies.
+.sell [item]	Sell items (e.g. .sell fish)
+.dig	Digging minigame. Returns coins (confirmed). Cooldown applies.
+.cds	Check cooldowns for all commands
+.shop	View shop — includes bank notes for increasing bank capacity
+.inventory / .inv	View owned items
+.use [item]	Use an item from inventory
+.rich	Rich list — links to rimuruslime.com/leaderboards
+.richg	Rich list by guild
+.profile / .p	Your full profile
+.orbs	Secondary currency — mechanics not yet documented
+.ebal	Event balance — mechanics not yet documented
+.beg	Beg for coins — small amounts, low priority
+11.2 Card Commands
+.claim [spawn_id]	Claim a spawned card. WA: alphanumeric ID. Discord: numeric ID.
+.col	Full card collection
+.si [name]	Search collection by character name
+.ci / .cardinfo [name] [tier]	Get card info and market value
+.card [index]	View specific card by index number
+.sellc [index] [price]	List card for sale to other players
+.sc [@] [index] [price]	Sell/send card directly to a player
+.tc [@] [index] [index]	Trade cards with another player
+.lendcard / .lc	Lend a card. WARNING: lent cards lock to borrower.
+.submit [index] [price]	Submit card to auction
+.myauc	Your active auction listings
+.remauc [index]	Remove an auction listing
+.listauc	View all current auctions
+.clb	Card leaderboard — who has most cards
+.slb [series]	Series leaderboard
+.ss [series]	Search cards by series
+.rc [index]	Recycle card — mechanics not yet documented, TEST
+.stardust	Unknown resource — TEST
+.cardshop	Buy cards directly
+.deck	View active deck
+11.3 Gambling Commands
+.casino <amount>	Double or nothing. Win = 2x. Most popular.
+.cf <heads|tails> <amount>	Coinflip. Win = 2x.
+.slots <amount>	Slot machine. Win = 2x.
+.dice <1-6> <amount>	Guess dice roll. Win = 3x.
+.db <amount>	Dice battle vs bot. Higher roll wins. Tie = refund.
+.roulette <type> <amount>	Roulette. Bet types not yet fully documented.
+.horse <selection> <amount>	Horse racing. Mechanics not yet documented.
+.dp <amount>	Unknown — TEST and document.
+.gamble	Sends link to gambling group channel — ignore.
+11.4 Utility Commands
+.bots	List all bots and their online/offline status. Green = online, Red = offline.
+.test	Ping test — bot replies with latency in ms. Format: "Mata Mata! > 2700ms"
+.lb / .leaderboard	Sends link to rimuruslime.com/leaderboards — ignore.
+11.5 Admin-Only Commands (Not Available to Bot)
+.cards on/off	Toggle card spawn notifications. ADMIN ONLY.
+.auction	Start an auction. ADMIN ONLY.
+
+ 
+12. Discord Specifics
+12.1 Self-Bot vs Observer Bot
+Discord uses TWO separate processes running simultaneously:
+Self-bot (YOUR token)	Automates commands as your real Discord account. Sends .daily, .fish, .claim, .casino etc. Uses discord.js-selfbot-v13 library. This earns coins and cards on YOUR profile.
+Observer bot (app token)	Silent discord.js bot account. Never sends commands. Just listens, logs all messages to Supabase, monitors bot health. Purely intelligence gathering.
+Why both?	Self-bot = earner. Observer = brain. Combined they give full automation + full data.
+Risk note	Self-botting is against Discord ToS but extremely low ban risk if behaviour looks human. Use humanised delays same as WhatsApp.
+12.2 Server Channel Structure (Rimuru Main Server)
+#tempest-domain	Card spawns / general — primary activity channel
+#rem-haven	Card spawns / general — secondary
+#fisherman-and-miner	Fishing and digging channel
+#tensura-auction	Auction activity
+#tempest-gambling	Primary gambling channel
+#gambling-2	Overflow gambling
+#gambling-3	Overflow gambling
+12.3 Discord vs WhatsApp Differences
+Bot detection	Discord: author.bot === true (native). WA: dynamic from .bots parse.
+Card spawn format	Discord uses EMBED format. Parse embed.fields for Name/Tier/Price/Issue.
+Spawn ID format	Discord: numeric only (e.g. 94650). WhatsApp: alphanumeric (e.g. 561ca).
+Self-bot library	discord.js-selfbot-v13 — NOT standard discord.js. Different import.
+Rate limiting	Discord: 5 messages per 5 seconds per channel. Respect this.
+Message intents	MESSAGE_CONTENT intent must be enabled in Discord Developer Portal.
+Command prefix	Same "." prefix as WhatsApp. All commands identical.
+
+ 
+13. Outstanding Unknowns
+These are things that need to be tested/observed in the game before the relevant automation modules can be fully built. They do NOT block the core build.
+13.1 Blocking for Specific Modules
+.orbs	Secondary currency. Unknown purpose, value, and earning method. TEST: send .orbs and screenshot.
+.ebal	Event balance. Unknown what events generate this. TEST: send .ebal and screenshot.
+.shop prices	Need exact bank note prices to plan automatic bank capacity upgrades.
+.horse mechanic	Need to understand race format, how to pick, payout structure.
+.roulette bet types	What bet types are available? What are the payouts?
+.dp mechanic	Unknown game. TEST and document.
+.rc mechanic	Recycle card — what does it return? Worth automating?
+.stardust	Unknown resource. TEST.
+.anticamp	Unknown. TEST.
+Dig cooldown	Exact cooldown not yet observed. Will be learned on first .dig response.
+Unprompted event formats	Coin bombs, lottery, random drops — screenshot next time any appear.
+.bots when ALL offline	What does response look like? Edge case for health monitor.
+Discord gambling win/loss text	Same as WhatsApp or different? Confirm with Discord test.
+
+ 
+14. Build Order
+Phase 1 — Foundation
+6.	Supabase project setup — enable Realtime on required tables
+7.	Create shared-types package — TypeScript interfaces for all DB tables and message types
+8.	Monorepo setup — workspace config for whatsapp-bot, discord-bot, dashboard, packages
+Phase 2 — WhatsApp Bot
+9.	Baileys connection + session management (session file per number)
+10.	Base message listener — receive all messages, route by type
+11.	Dynamic bot detection — parse .bots response, populate known_bots table
+12.	Bot health monitor — implement 5-state machine per group
+13.	Gambling data collector — pending_bets queue, reply matching, outcome parsing
+14.	Card claimer — spawn detection, humanised delay, offline recovery flow
+15.	Daily automation — per-group scheduler, streak protection
+16.	Fishing automation — weighted random scheduler, catch router
+17.	Digging automation — same pattern as fishing
+18.	Global send queue — 500ms minimum gap enforcement
+Phase 3 — Discord Bot
+19.	discord.js connection + intent configuration (MESSAGE_CONTENT required)
+20.	Embed parser — card spawns come as Discord embeds, not plain text
+21.	Mirror all WhatsApp bot features for Discord
+22.	Discord-specific channel routing (fishing to #fisherman-and-miner, gambling to #tempest-gambling etc)
+Phase 4 — Dashboard
+23.	Next.js project setup with Supabase Realtime client
+24.	Shared layout — persistent top bar, mobile bottom nav, desktop sidebar
+25.	Home page — command center with live event feed
+26.	Bot Health page — group grid with controls
+27.	Gambling Analytics page — charts and player intelligence
+28.	Cards page — collection grid with actions
+29.	Wealth page — balance breakdown and growth chart
+30.	Control page — manual command center with automation toggles
+31.	Leaderboard Tracker page — position tracking and competitor profiles
+
+ 
+15. Build Tracker
+This section is updated every time code is written. Any AI picking this project up must read this section first to know exactly what exists and what comes next.
+Last updated: March 2026
+15.1 Status Legend
+NOT STARTED	Nothing built yet
+IN PROGRESS	Partially built — see notes
+COMPLETE	Built and tested
+BLOCKED	Cannot proceed — see reason
+15.2 Current Build Status
+Component	Status	Notes / File Location
+Supabase schema	COMPLETE	schema.sql — run in Supabase SQL Editor
+Shared TypeScript types	COMPLETE	packages/shared-types/src/index.ts
+Monorepo setup	COMPLETE	tensura-project.zip — extract and run yarn install
+Baileys connection	COMPLETE	apps/whatsapp-bot/src/index.ts
+Base message listener	NOT STARTED	START HERE — apps/whatsapp-bot/src/message-router.ts
+Dynamic bot detection	NOT STARTED	—
+Bot health monitor	NOT STARTED	—
+Gambling data collector	NOT STARTED	—
+Card claimer	NOT STARTED	—
+Daily automation	NOT STARTED	—
+Fishing automation	NOT STARTED	—
+Digging automation	NOT STARTED	—
+Global send queue	NOT STARTED	—
+Discord bot connection	NOT STARTED	—
+Discord embed parser	NOT STARTED	—
+Discord bot features mirror	NOT STARTED	—
+Next.js dashboard setup	NOT STARTED	—
+Home page	NOT STARTED	—
+Bot Health page	NOT STARTED	—
+Gambling Analytics page	NOT STARTED	—
+Cards page	NOT STARTED	—
+Wealth page	NOT STARTED	—
+Control page	NOT STARTED	—
+Leaderboard Tracker page	NOT STARTED	—
+15.3 What To Do Next
+READ THIS BEFORE WRITING ANY CODE. The next step as of this document version is:
+NEXT ACTION: Phase 2 Step 2 — Base message listener + router (apps/whatsapp-bot/src/message-router.ts). This parses every incoming message and routes it to the correct handler (bot detection, gambling, cards, daily etc).
+After that: set up the monorepo structure, then begin with the Baileys WhatsApp bot (Phase 2, Step 1).
+Do NOT skip ahead. The shared types package must exist before any bot code is written so types are consistent across all three systems.
+
+ 
+16. Instructions for AI Assistants
+If you are an AI assistant and this document has been shared with you, read this section carefully before responding to anything.
+16.1 Context
+This is a long-running project being built iteratively. The human owner (referred to as "you" throughout this document) has had extensive planning conversations that resulted in this document. You do not need those conversations — this document contains everything.
+16.2 What You Need to Know
+•	The goal is to become the richest player in the Tensura WhatsApp/Discord community
+•	The strategy is automated card claiming + passive coin farming + gambling data intelligence
+•	The tech stack is TypeScript/Node.js/Baileys/discord.js/Next.js/Supabase — do not suggest alternatives
+•	Every logic decision in this document has been carefully reasoned — do not change architecture without understanding why it exists
+•	Check Section 15 (Build Tracker) first to see what has been built and what comes next
+•	When you write code, tell the human to update the Build Tracker with file locations and status
+•	All code should be TypeScript. No JavaScript.
+•	Follow the build order in Section 14 exactly
+16.3 When Code Is Written
+After writing any code, provide the human with the following to paste into Section 15.3 of this document:
+•	Component name
+•	New status (IN PROGRESS or COMPLETE)
+•	File path where the code lives
+•	What the next action is
+This keeps the document current so the next AI session has full context.
+16.4 Do Not
+•	Do not suggest MongoDB — the database is Supabase (PostgreSQL)
+•	Do not suggest JavaScript — everything is TypeScript
+•	Do not change the account structure (two accounts: main vault + bot grinder)
+•	Do not automate asset transfers — transfers are always manual by the human
+•	Do not hardcode bot phone numbers or Discord IDs — use dynamic detection
+•	Do not skip the shared-types package — it must be built before bot or dashboard code
+
+END OF DOCUMENT
+Tensura Domination Project Bible v1.0 | March 2026
